@@ -195,7 +195,7 @@ impl<'a> CreateProjectHandler<'a> {
             id: DomainEventId(Uuid::new_v4()),
             project_id,
             created_at: (self.utc_now)(),
-            event: event,
+            event,
         }).collect();
         self.repository.persist(Generation::first(), &events)?;
 

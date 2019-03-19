@@ -52,7 +52,7 @@ pub enum VariantEvent {
 }
 
 fn main() -> Result<(), Error> {
-    let db = &SqliteConnection::establish(":memory:")?;
+    let db = &SqliteConnection::establish("db.sqlite")?;
     let repository = &mut project::SqliteRepository { db };
     let handler = &mut project::CreateProjectHandler {
         repository,
