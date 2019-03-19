@@ -165,7 +165,7 @@ impl<'a> SqliteRepository<'a> {
             let new = NewEvent {
                 id: &event.id.to_string(),
                 aggregate_id: &event.project_id.to_string(),
-                created_at: &event.created_at.format("%Y-%m-%d %H:%M:%S").to_string(),
+                created_at: &event.created_at.to_rfc3339(),
                 type_: &event.event.type_(),
                 data: &serde_json::to_string(&event.event)?,
             };
@@ -259,7 +259,7 @@ mod test {
             let event = NewEvent {
                 id: "550e8400-e29b-41d4-a716-446655440000",
                 aggregate_id: "936da01f-9abd-4d9d-80c7-02af85c822a8",
-                created_at: "2019-01-01 12:34:56",
+                created_at: "2019-01-01T12:34:56+00:00",
                 type_: "Created",
                 data: "{\"Created\":{\"id\":\"936da01f-9abd-4d9d-80c7-02af85c822a8\",\"name\":\"test\"}}",
             };
@@ -312,7 +312,7 @@ mod test {
             assert_eq!(results, vec![Event {
                 id: "550e8400-e29b-41d4-a716-446655440000".to_owned(),
                 aggregate_id: "936da01f-9abd-4d9d-80c7-02af85c822a8".to_owned(),
-                created_at: "2019-01-01 00:00:00".to_owned(),
+                created_at: "2019-01-01T00:00:00+00:00".to_owned(),
                 type_: "Created".to_owned(),
                 data: "{\"Created\":{\"id\":\"936da01f-9abd-4d9d-80c7-02af85c822a8\",\"name\":\"test\"}}".to_owned(),
             }]);
