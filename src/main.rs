@@ -61,32 +61,32 @@ pub enum VariantEvent {
 }
 
 #[derive(Debug, Fail)]
-pub enum HttpCreateProjectError {
+pub enum AppError {
     #[fail(display = "database pool error")]
     DatabasePoolError(#[cause] r2d2::Error),
     #[fail(display = "create project error")]
     CreateProjectError(#[cause] CreateProjectHandlerError),
 }
 
-impl From<r2d2::Error> for HttpCreateProjectError {
+impl From<r2d2::Error> for AppError {
     fn from(e: r2d2::Error) -> Self {
-        HttpCreateProjectError::DatabasePoolError(e)
+        AppError::DatabasePoolError(e)
     }
 }
 
-impl From<CreateProjectHandlerError> for HttpCreateProjectError {
+impl From<CreateProjectHandlerError> for AppError {
     fn from(e: CreateProjectHandlerError) -> Self {
-        HttpCreateProjectError::CreateProjectError(e)
+        AppError::CreateProjectError(e)
     }
 }
 
-impl ResponseError for HttpCreateProjectError {
+impl ResponseError for AppError {
     fn error_response(&self) -> HttpResponse {
         match *self {
-            HttpCreateProjectError::DatabasePoolError(_) => {
+            AppError::DatabasePoolError(_) => {
                 HttpResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
             }
-            HttpCreateProjectError::CreateProjectError(_) => {
+            AppError::CreateProjectError(_) => {
                 HttpResponse::new(StatusCode::BAD_REQUEST)
             }
         }
@@ -103,7 +103,7 @@ fn create_project(req: &HttpRequest<State>) -> actix_web::Result<HttpResponse> {
         .state()
         .db
         .get()
-        .map_err(|e| -> HttpCreateProjectError { e.into() })?;
+        .map_err(|e| -> AppError { e.into() })?;
     let repository = &mut SqliteRepository { db };
     let handler = &mut CreateProjectHandler {
         repository,
@@ -115,7 +115,7 @@ fn create_project(req: &HttpRequest<State>) -> actix_web::Result<HttpResponse> {
             id: Uuid::new_v4(),
             name: "hello".to_owned(),
         })
-        .map_err(|e| -> HttpCreateProjectError { e.into() })?;
+        .map_err(|e| -> AppError { e.into() })?;
 
     Ok(HttpResponse::new(StatusCode::OK))
 }
