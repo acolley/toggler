@@ -1,10 +1,10 @@
 use chrono::{DateTime, Utc};
 use diesel;
-use diesel::RunQueryDsl;
 use diesel::sqlite::SqliteConnection;
+use diesel::RunQueryDsl;
 use failure::Error;
 use failure_derive::Fail;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use serde_json;
 use uuid::Uuid;
 
@@ -34,20 +34,11 @@ impl Generation {
 }
 
 #[derive(Debug, Eq, Fail, PartialEq)]
-pub enum CreateProjectError {
+pub enum ProjectError {
     #[fail(display = "invalid project name: {}", name)]
-    InvalidName {
-        name: String,
-    },
-}
-
-#[derive(Debug, Eq, Fail, PartialEq)]
-pub enum ApplyEventError {
+    InvalidName { name: String },
     #[fail(display = "invalid event `{}` applied to state `{}", event, state)]
-    InvalidStateEvent {
-        state: String,
-        event: String,
-    },
+    InvalidStateEvent { state: String, event: String },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -58,30 +49,25 @@ pub struct Project {
 }
 
 impl Project {
-    pub fn create(id: ProjectId, name: &str) -> Result<Vec<ProjectEvent>, CreateProjectError> {
-        Ok(vec![ProjectEvent::Created {
-            id: id,
-            name: String::from(name),
-        }])
+    pub fn create(id: ProjectId, name: String) -> Result<Vec<ProjectEvent>, ProjectError> {
+        Ok(vec![ProjectEvent::Created { id, name }])
     }
 
-    pub fn apply_event(project: Option<Self>, event: &ProjectEvent) -> Result<Self, ApplyEventError> {
+    pub fn apply_event(project: Option<Self>, event: &ProjectEvent) -> Result<Self, ProjectError> {
         match (&project, event) {
-            (None, ProjectEvent::Created {
-                id, name,
-            }) => Ok(Project {
+            (None, ProjectEvent::Created { id, name }) => Ok(Project {
                 id: *id,
                 generation: Generation(0),
                 name: name.clone(),
             }),
-            _ => Err(ApplyEventError::InvalidStateEvent {
+            _ => Err(ProjectError::InvalidStateEvent {
                 state: format!("{:?}", project),
                 event: format!("{:?}", event),
             }),
         }
     }
 
-    pub fn hydrate(events: &[ProjectEvent]) -> Result<Option<Self>, Error> {
+    pub fn hydrate(events: &[ProjectEvent]) -> Result<Option<Self>, ProjectError> {
         let mut project = None;
         for event in events {
             project = Some(Self::apply_event(project, event)?);
@@ -92,10 +78,7 @@ impl Project {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ProjectEvent {
-    Created {
-        id: ProjectId,
-        name: String,
-    },
+    Created { id: ProjectId, name: String },
 }
 
 impl ProjectEvent {
@@ -123,8 +106,36 @@ pub struct DomainEvent {
     event: ProjectEvent,
 }
 
+#[derive(Debug, Fail)]
+pub enum DomainEventError {
+    #[fail(display = "failed to parse uuid")]
+    UuidParseError(#[cause] uuid::parser::ParseError),
+    #[fail(display = "failed to parse datetime")]
+    DateTimeParseError(#[cause] chrono::format::ParseError),
+    #[fail(display = "failed to parse JSON data")]
+    JsonParseError(#[cause] serde_json::error::Error),
+}
+
+impl From<uuid::parser::ParseError> for DomainEventError {
+    fn from(e: uuid::parser::ParseError) -> Self {
+        DomainEventError::UuidParseError(e)
+    }
+}
+
+impl From<chrono::format::ParseError> for DomainEventError {
+    fn from(e: chrono::format::ParseError) -> Self {
+        DomainEventError::DateTimeParseError(e)
+    }
+}
+
+impl From<serde_json::error::Error> for DomainEventError {
+    fn from(e: serde_json::error::Error) -> Self {
+        DomainEventError::JsonParseError(e)
+    }
+}
+
 impl DomainEvent {
-    pub fn from_event(event: Event) -> Result<Self, Error> {
+    pub fn from_event(event: Event) -> Result<Self, DomainEventError> {
         Ok(Self {
             id: DomainEventId(Uuid::parse_str(&event.id)?),
             project_id: ProjectId(Uuid::parse_str(&event.aggregate_id)?),
@@ -134,9 +145,40 @@ impl DomainEvent {
     }
 }
 
-pub struct DomainEvents<'a> {
-    project_id: ProjectId,
-    events: &'a [DomainEvent],
+#[derive(Debug, Fail)]
+pub enum SqliteRepositoryError {
+    #[fail(display = "database error")]
+    DatabaseError(#[cause] diesel::result::Error),
+    #[fail(display = "domain event error")]
+    DomainEventError(#[cause] DomainEventError),
+    #[fail(display = "project error")]
+    ProjectError(#[cause] ProjectError),
+    #[fail(display = "json format error")]
+    JsonFormatError(#[cause] serde_json::error::Error),
+}
+
+impl From<diesel::result::Error> for SqliteRepositoryError {
+    fn from(e: diesel::result::Error) -> Self {
+        SqliteRepositoryError::DatabaseError(e)
+    }
+}
+
+impl From<DomainEventError> for SqliteRepositoryError {
+    fn from(e: DomainEventError) -> Self {
+        SqliteRepositoryError::DomainEventError(e)
+    }
+}
+
+impl From<ProjectError> for SqliteRepositoryError {
+    fn from(e: ProjectError) -> Self {
+        SqliteRepositoryError::ProjectError(e)
+    }
+}
+
+impl From<serde_json::error::Error> for SqliteRepositoryError {
+    fn from(e: serde_json::error::Error) -> Self {
+        SqliteRepositoryError::JsonFormatError(e)
+    }
 }
 
 pub struct SqliteRepository<'a> {
@@ -144,23 +186,25 @@ pub struct SqliteRepository<'a> {
 }
 
 impl<'a> SqliteRepository<'a> {
-    pub fn get(&self, id: ProjectId) -> Result<Option<Project>, Error> {
+    pub fn get(&self, id: ProjectId) -> Result<Option<Project>, SqliteRepositoryError> {
+        use crate::database::schema::events::dsl::{aggregate_id, events};
         use diesel::prelude::*;
-        use crate::database::schema::events::dsl::{
-            aggregate_id,
-            events,
-        };
 
-        let results: Result<Vec<_>, Error> = events.filter(aggregate_id.eq(id.to_string()))
+        let results: Result<Vec<_>, DomainEventError> = events
+            .filter(aggregate_id.eq(id.to_string()))
             .load::<Event>(self.db)?
             .into_iter()
             .map(DomainEvent::from_event)
             .map(|x| x.map(|e| e.event))
             .collect();
-        Project::hydrate(&results?)
+        Project::hydrate(&results?).map_err(|e| e.into())
     }
 
-    pub fn persist(&mut self, generation: Generation, events: &[DomainEvent]) -> Result<(), Error> {
+    pub fn persist(
+        &self,
+        generation: Generation,
+        events: &[DomainEvent],
+    ) -> Result<(), SqliteRepositoryError> {
         for event in events {
             let new = NewEvent {
                 id: &event.id.to_string(),
@@ -179,24 +223,48 @@ impl<'a> SqliteRepository<'a> {
 }
 
 pub struct CreateProject {
+    pub id: Uuid,
     pub name: String,
 }
 
+#[derive(Debug, Fail)]
+pub enum CreateProjectHandlerError {
+    #[fail(display = "project error")]
+    ProjectError(#[cause] ProjectError),
+    #[fail(display = "repository error")]
+    RepositoryError(#[cause] SqliteRepositoryError),
+}
+
+impl From<ProjectError> for CreateProjectHandlerError {
+    fn from(e: ProjectError) -> Self {
+        CreateProjectHandlerError::ProjectError(e)
+    }
+}
+
+impl From<SqliteRepositoryError> for CreateProjectHandlerError {
+    fn from(e: SqliteRepositoryError) -> Self {
+        CreateProjectHandlerError::RepositoryError(e)
+    }
+}
+
 pub struct CreateProjectHandler<'a> {
-    pub repository: &'a mut SqliteRepository<'a>,
+    pub repository: &'a SqliteRepository<'a>,
     pub utc_now: fn() -> DateTime<Utc>,
 }
 
 impl<'a> CreateProjectHandler<'a> {
-    pub fn handle(&mut self, command: &CreateProject) -> Result<(), Error> {
-        let project_id = ProjectId(Uuid::new_v4());
-        let events = Project::create(project_id, &command.name)?;
-        let events: Vec<DomainEvent> = events.into_iter().map(|event| DomainEvent {
-            id: DomainEventId(Uuid::new_v4()),
-            project_id,
-            created_at: (self.utc_now)(),
-            event,
-        }).collect();
+    pub fn handle(&self, command: CreateProject) -> Result<(), CreateProjectHandlerError> {
+        let project_id = ProjectId(command.id);
+        let events = Project::create(project_id, command.name)?;
+        let events: Vec<DomainEvent> = events
+            .into_iter()
+            .map(|event| DomainEvent {
+                id: DomainEventId(Uuid::new_v4()),
+                project_id,
+                created_at: (self.utc_now)(),
+                event,
+            })
+            .collect();
         self.repository.persist(Generation::first(), &events)?;
 
         Ok(())
@@ -208,46 +276,37 @@ mod test {
     mod project {
         use uuid::Uuid;
 
-        use super::super::{
-            Project,
-            ProjectEvent,
-            ProjectId,
-        };
+        use super::super::{Project, ProjectEvent, ProjectId};
 
         #[test]
         fn test_create() {
             let id = ProjectId(Uuid::parse_str("936DA01F9ABD4d9d80C702AF85C822A8").unwrap());
-            let events = Project::create(
-                id,
-                "test",
+            let events = Project::create(id, "test");
+            assert_eq!(
+                events,
+                Ok(vec![ProjectEvent::Created {
+                    id,
+                    name: "test".into(),
+                }])
             );
-            assert_eq!(events, Ok(vec![ProjectEvent::Created {
-                id,
-                name: "test".into(),
-            }]));
         }
     }
 
     mod repository {
-        use chrono::Utc;
         use chrono::offset::TimeZone;
+        use chrono::Utc;
         use diesel::prelude::*;
         use diesel::sqlite::SqliteConnection;
         use diesel_migrations;
         use failure::Error;
         use uuid::Uuid;
 
-        use crate::database::schema;
         use crate::database::models::{Event, NewEvent};
+        use crate::database::schema;
         use crate::database::schema::events::dsl::*;
 
         use super::super::{
-            DomainEvent,
-            DomainEventId,
-            Generation,
-            Project,
-            ProjectEvent,
-            ProjectId,
+            DomainEvent, DomainEventId, Generation, Project, ProjectEvent, ProjectId,
             SqliteRepository,
         };
 
@@ -266,17 +325,18 @@ mod test {
             diesel::insert_into(schema::events::table)
                 .values(&event)
                 .execute(db)?;
-            
-            let project_id = ProjectId(
-                Uuid::parse_str("936da01f-9abd-4d9d-80c7-02af85c822a8")?
-            );
+
+            let project_id = ProjectId(Uuid::parse_str("936da01f-9abd-4d9d-80c7-02af85c822a8")?);
             let project = repository.get(project_id)?;
 
-            assert_eq!(project, Some(Project {
-                id: project_id,
-                generation: Generation::first(),
-                name: "test".to_owned(),
-            }));
+            assert_eq!(
+                project,
+                Some(Project {
+                    id: project_id,
+                    generation: Generation::first(),
+                    name: "test".to_owned(),
+                })
+            );
             Ok(())
         }
 
@@ -285,29 +345,24 @@ mod test {
             let db = &SqliteConnection::establish(":memory:")?;
             diesel_migrations::run_pending_migrations(db)?;
             let mut repository = SqliteRepository { db };
-            let project_id = ProjectId(
-                Uuid::parse_str("936da01f-9abd-4d9d-80c7-02af85c822a8")?,
-            );
-            let event_id = DomainEventId(
-                Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000")?,
-            );
+            let project_id = ProjectId(Uuid::parse_str("936da01f-9abd-4d9d-80c7-02af85c822a8")?);
+            let event_id = DomainEventId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000")?);
 
             repository.persist(
                 Generation::first(),
-                &[
-                    DomainEvent {
-                        id: event_id,
-                        project_id: project_id,
-                        created_at: Utc.ymd(2019, 1, 1).and_hms(0, 0, 0),
-                        event: ProjectEvent::Created {
-                            id: project_id,
-                            name: "test".into(),
-                        },
+                &[DomainEvent {
+                    id: event_id,
+                    project_id: project_id,
+                    created_at: Utc.ymd(2019, 1, 1).and_hms(0, 0, 0),
+                    event: ProjectEvent::Created {
+                        id: project_id,
+                        name: "test".into(),
                     },
-                ],
+                }],
             )?;
 
-            let results = events.filter(id.eq("550e8400-e29b-41d4-a716-446655440000"))
+            let results = events
+                .filter(id.eq("550e8400-e29b-41d4-a716-446655440000"))
                 .load::<Event>(db)?;
             assert_eq!(results, vec![Event {
                 id: "550e8400-e29b-41d4-a716-446655440000".to_owned(),

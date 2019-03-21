@@ -6,11 +6,20 @@ extern crate diesel;
 mod database;
 mod project;
 
+use actix_web::middleware::Logger;
+use actix_web::{
+    error::ResponseError, http::Method, http::StatusCode, server, App, HttpRequest, HttpResponse,
+};
 use chrono::Utc;
-use diesel::Connection;
+use diesel::r2d2::{ConnectionManager, Pool};
 use diesel::sqlite::SqliteConnection;
 use failure::Error;
+use failure_derive::Fail;
 use uuid::Uuid;
+
+use crate::project::{
+    CreateProject, CreateProjectHandler, CreateProjectHandlerError, SqliteRepository,
+};
 
 struct Environment {
     id: Uuid,
@@ -51,17 +60,82 @@ pub enum VariantEvent {
     Revived,
 }
 
-fn main() -> Result<(), Error> {
-    let db = &SqliteConnection::establish("db.sqlite")?;
-    let repository = &mut project::SqliteRepository { db };
-    let handler = &mut project::CreateProjectHandler {
+#[derive(Debug, Fail)]
+pub enum HttpCreateProjectError {
+    #[fail(display = "database pool error")]
+    DatabasePoolError(#[cause] r2d2::Error),
+    #[fail(display = "create project error")]
+    CreateProjectError(#[cause] CreateProjectHandlerError),
+}
+
+impl From<r2d2::Error> for HttpCreateProjectError {
+    fn from(e: r2d2::Error) -> Self {
+        HttpCreateProjectError::DatabasePoolError(e)
+    }
+}
+
+impl From<CreateProjectHandlerError> for HttpCreateProjectError {
+    fn from(e: CreateProjectHandlerError) -> Self {
+        HttpCreateProjectError::CreateProjectError(e)
+    }
+}
+
+impl ResponseError for HttpCreateProjectError {
+    fn error_response(&self) -> HttpResponse {
+        match *self {
+            HttpCreateProjectError::DatabasePoolError(_) => {
+                HttpResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
+            }
+            HttpCreateProjectError::CreateProjectError(_) => {
+                HttpResponse::new(StatusCode::BAD_REQUEST)
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct State {
+    db: Pool<ConnectionManager<SqliteConnection>>,
+}
+
+fn create_project(req: &HttpRequest<State>) -> actix_web::Result<HttpResponse> {
+    let db = &req
+        .state()
+        .db
+        .get()
+        .map_err(|e| -> HttpCreateProjectError { e.into() })?;
+    let repository = &mut SqliteRepository { db };
+    let handler = &mut CreateProjectHandler {
         repository,
         utc_now: Utc::now,
     };
 
-    handler.handle(&project::CreateProject {
-        name: "hello".to_owned(),
-    })?;
+    handler
+        .handle(CreateProject {
+            id: Uuid::new_v4(),
+            name: "hello".to_owned(),
+        })
+        .map_err(|e| -> HttpCreateProjectError { e.into() })?;
+
+    Ok(HttpResponse::new(StatusCode::OK))
+}
+
+// Failure usage: https://github.com/rust-console/cargo-n64/blob/a4c93f9bb145f3ee8ac6d09e05e8ff4554b68a2d/src/lib.rs#L108-L137
+
+fn main() -> Result<(), Error> {
+    std::env::set_var("RUST_LOG", "actix_web=info");
+    env_logger::init();
+    let manager = ConnectionManager::<SqliteConnection>::new("db.sqlite");
+    let pool = Pool::builder().build(manager)?;
+    server::new(move || {
+        App::with_state(State { db: pool.clone() })
+            .middleware(Logger::default())
+            .resource("/projects/create", |r| {
+                r.method(Method::POST).f(create_project)
+            })
+    })
+    .bind("127.0.0.1:8088")?
+    .run();
 
     Ok(())
 }

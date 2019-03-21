@@ -12,7 +12,7 @@ pub struct Event {
 }
 
 #[derive(Debug, Insertable)]
-#[table_name="events"]
+#[table_name = "events"]
 pub struct NewEvent<'a> {
     pub id: &'a str,
     pub aggregate_id: &'a str,
