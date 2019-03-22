@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use chrono::{DateTime, Utc};
 use diesel;
 use diesel::sqlite::SqliteConnection;
@@ -17,6 +19,33 @@ pub struct ProjectId(Uuid);
 impl ProjectId {
     pub fn to_string(&self) -> String {
         self.0.to_string()
+    }
+}
+
+#[derive(Debug, Fail)]
+pub enum ProjectIdParseError {
+    #[fail(display = "fail to parse uuid")]
+    UuidParseError(#[cause] uuid::parser::ParseError),
+}
+
+impl From<uuid::parser::ParseError> for ProjectIdParseError {
+    fn from(e: uuid::parser::ParseError) -> ProjectIdParseError {
+        ProjectIdParseError::UuidParseError(e)
+    }
+}
+
+impl FromStr for ProjectId {
+    type Err = ProjectIdParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let id = Uuid::parse_str(s)?;
+        Ok(Self(id))
+    }
+}
+
+impl From<ProjectId> for Uuid {
+    fn from(id: ProjectId) -> Self {
+        id.0
     }
 }
 
@@ -43,9 +72,9 @@ pub enum ProjectError {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Project {
-    id: ProjectId,
-    generation: Generation,
-    name: String,
+    pub id: ProjectId,
+    pub generation: Generation,
+    pub name: String,
 }
 
 impl Project {
@@ -155,6 +184,8 @@ pub enum SqliteRepositoryError {
     ProjectError(#[cause] ProjectError),
     #[fail(display = "json format error")]
     JsonFormatError(#[cause] serde_json::error::Error),
+    #[fail(display = "not found error")]
+    NotFoundError,
 }
 
 impl From<diesel::result::Error> for SqliteRepositoryError {
@@ -186,7 +217,7 @@ pub struct SqliteRepository<'a> {
 }
 
 impl<'a> SqliteRepository<'a> {
-    pub fn get(&self, id: ProjectId) -> Result<Option<Project>, SqliteRepositoryError> {
+    pub fn get(&self, id: ProjectId) -> Result<Project, SqliteRepositoryError> {
         use crate::database::schema::events::dsl::{aggregate_id, events};
         use diesel::prelude::*;
 
@@ -197,7 +228,8 @@ impl<'a> SqliteRepository<'a> {
             .map(DomainEvent::from_event)
             .map(|x| x.map(|e| e.event))
             .collect();
-        Project::hydrate(&results?).map_err(|e| e.into())
+        let project = Project::hydrate(&results?)?;
+        project.ok_or_else(|| SqliteRepositoryError::NotFoundError)
     }
 
     pub fn persist(
@@ -268,6 +300,32 @@ impl<'a> CreateProjectHandler<'a> {
         self.repository.persist(Generation::first(), &events)?;
 
         Ok(())
+    }
+}
+
+pub struct ListProject {
+    pub id: ProjectId,
+}
+
+#[derive(Debug, Fail)]
+pub enum ListProjectHandlerError {
+    #[fail(display = "repository error")]
+    RepositoryError(#[cause] SqliteRepositoryError),
+}
+
+impl From<SqliteRepositoryError> for ListProjectHandlerError {
+    fn from(e: SqliteRepositoryError) -> Self {
+        ListProjectHandlerError::RepositoryError(e)
+    }
+}
+
+pub struct ListProjectHandler<'a> {
+    pub repository: &'a SqliteRepository<'a>,
+}
+
+impl<'a> ListProjectHandler<'a> {
+    pub fn handle(&self, command: ListProject) -> Result<Project, ListProjectHandlerError> {
+        Ok(self.repository.get(command.id)?)
     }
 }
 
