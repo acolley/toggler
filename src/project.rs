@@ -339,7 +339,7 @@ mod test {
         #[test]
         fn test_create() {
             let id = ProjectId(Uuid::parse_str("936DA01F9ABD4d9d80C702AF85C822A8").unwrap());
-            let events = Project::create(id, "test");
+            let events = Project::create(id, "test".to_owned());
             assert_eq!(
                 events,
                 Ok(vec![ProjectEvent::Created {
@@ -389,11 +389,11 @@ mod test {
 
             assert_eq!(
                 project,
-                Some(Project {
+                Project {
                     id: project_id,
                     generation: Generation::first(),
                     name: "test".to_owned(),
-                })
+                },
             );
             Ok(())
         }
