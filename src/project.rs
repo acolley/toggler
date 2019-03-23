@@ -50,7 +50,7 @@ impl From<ProjectId> for Uuid {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct Generation(u64);
+pub struct Generation(i32);
 
 impl Generation {
     pub fn first() -> Self {
@@ -59,6 +59,12 @@ impl Generation {
 
     pub fn next(&self) -> Self {
         Self(self.0 + 1)
+    }
+}
+
+impl From<Generation> for i32 {
+    fn from(generation: Generation) -> Self {
+        generation.0
     }
 }
 
@@ -237,10 +243,12 @@ impl<'a> SqliteRepository<'a> {
         generation: Generation,
         events: &[DomainEvent],
     ) -> Result<(), SqliteRepositoryError> {
+        let mut generation = generation;
         for event in events {
             let new = NewEvent {
                 id: &event.id.to_string(),
                 aggregate_id: &event.project_id.to_string(),
+                generation: generation.into(),
                 created_at: &event.created_at.to_rfc3339(),
                 type_: &event.event.type_(),
                 data: &serde_json::to_string(&event.event)?,
@@ -248,6 +256,7 @@ impl<'a> SqliteRepository<'a> {
             diesel::insert_into(schema::events::table)
                 .values(&new)
                 .execute(self.db)?;
+            generation = generation.next();
         }
 
         Ok(())
@@ -376,6 +385,7 @@ mod test {
             let event = NewEvent {
                 id: "550e8400-e29b-41d4-a716-446655440000",
                 aggregate_id: "936da01f-9abd-4d9d-80c7-02af85c822a8",
+                generation: 0,
                 created_at: "2019-01-01T12:34:56+00:00",
                 type_: "Created",
                 data: "{\"Created\":{\"id\":\"936da01f-9abd-4d9d-80c7-02af85c822a8\",\"name\":\"test\"}}",
@@ -425,6 +435,7 @@ mod test {
             assert_eq!(results, vec![Event {
                 id: "550e8400-e29b-41d4-a716-446655440000".to_owned(),
                 aggregate_id: "936da01f-9abd-4d9d-80c7-02af85c822a8".to_owned(),
+                generation: 0,
                 created_at: "2019-01-01T00:00:00+00:00".to_owned(),
                 type_: "Created".to_owned(),
                 data: "{\"Created\":{\"id\":\"936da01f-9abd-4d9d-80c7-02af85c822a8\",\"name\":\"test\"}}".to_owned(),

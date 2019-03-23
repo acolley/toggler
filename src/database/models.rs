@@ -6,6 +6,7 @@ use super::schema::events;
 pub struct Event {
     pub id: String,
     pub aggregate_id: String,
+    pub generation: i32,
     pub created_at: String,
     pub type_: String,
     pub data: String,
@@ -16,6 +17,7 @@ pub struct Event {
 pub struct NewEvent<'a> {
     pub id: &'a str,
     pub aggregate_id: &'a str,
+    pub generation: i32,
     pub created_at: &'a str,
     pub type_: &'a str,
     pub data: &'a str,

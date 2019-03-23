@@ -128,6 +128,8 @@ pub struct State {
 }
 
 fn create_project(req: &HttpRequest<State>) -> actix_web::Result<HttpResponse> {
+    // TODO: run in transaction
+    // TODO: return JSON response with created Project
     let db = &req.state().db.get().map_err(|e| -> AppError { e.into() })?;
     let repository = &mut SqliteRepository { db };
     let handler = &mut CreateProjectHandler {
@@ -176,17 +178,17 @@ fn list_project(req: &HttpRequest<State>) -> actix_web::Result<Json<Project>> {
 // Failure usage: https://github.com/rust-console/cargo-n64/blob/a4c93f9bb145f3ee8ac6d09e05e8ff4554b68a2d/src/lib.rs#L108-L137
 
 fn main() -> Result<(), Error> {
-    std::env::set_var("RUST_LOG", "actix_web=info");
+    std::env::set_var("RUST_LOG", "actix_web=debug");
     env_logger::init();
     let manager = ConnectionManager::<SqliteConnection>::new("db.sqlite");
     let pool = Pool::builder().build(manager)?;
     server::new(move || {
         App::with_state(State { db: pool.clone() })
             .middleware(Logger::default())
-            .resource("/projects/{id}", |r| r.method(Method::GET).f(list_project))
             .resource("/projects/create", |r| {
                 r.method(Method::POST).f(create_project)
             })
+            .resource("/projects/{id}", |r| r.method(Method::GET).f(list_project))
     })
     .bind("127.0.0.1:8088")?
     .run();
