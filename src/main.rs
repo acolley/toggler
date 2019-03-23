@@ -12,6 +12,7 @@ use actix_web::{
     HttpResponse, Json,
 };
 use chrono::Utc;
+use diesel::Connection;
 use diesel::r2d2::{ConnectionManager, Pool};
 use diesel::sqlite::SqliteConnection;
 use failure::Error;
@@ -83,6 +84,8 @@ pub enum VariantEvent {
 pub enum AppError {
     #[fail(display = "database pool error")]
     DatabasePoolError(#[cause] r2d2::Error),
+    #[fail(display = "database error")]
+    DatabaseError(#[cause] diesel::result::Error),
     #[fail(display = "create project error")]
     CreateProjectError(#[cause] CreateProjectHandlerError),
     #[fail(display = "list project error")]
@@ -92,6 +95,12 @@ pub enum AppError {
 impl From<r2d2::Error> for AppError {
     fn from(e: r2d2::Error) -> Self {
         AppError::DatabasePoolError(e)
+    }
+}
+
+impl From<diesel::result::Error> for AppError {
+    fn from(e: diesel::result::Error) -> Self {
+        AppError::DatabaseError(e)
     }
 }
 
@@ -111,6 +120,7 @@ impl ResponseError for AppError {
     fn error_response(&self) -> HttpResponse {
         match *self {
             AppError::DatabasePoolError(_) => HttpResponse::new(StatusCode::INTERNAL_SERVER_ERROR),
+            AppError::DatabaseError(_) => HttpResponse::new(StatusCode::INTERNAL_SERVER_ERROR),
             AppError::CreateProjectError(_) => HttpResponse::new(StatusCode::BAD_REQUEST),
             AppError::ListProjectError(
                 ListProjectHandlerError::RepositoryError(
@@ -129,20 +139,22 @@ pub struct State {
 
 fn create_project(req: &HttpRequest<State>) -> actix_web::Result<Json<Project>> {
     // TODO: run in transaction
-    // TODO: return JSON response with created Project
     let db = &req.state().db.get().map_err(|e| -> AppError { e.into() })?;
-    let repository = &mut SqliteRepository { db };
-    let handler = &mut CreateProjectHandler {
-        repository,
-        utc_now: Utc::now,
-    };
+    let project = db.transaction::<_, AppError, _>(|| {
+        let repository = &mut SqliteRepository { db };
+        let handler = &mut CreateProjectHandler {
+            repository,
+            utc_now: Utc::now,
+        };
 
-    let project = handler
-        .handle(CreateProject {
-            id: Uuid::new_v4(),
-            name: "hello".to_owned(),
-        })
-        .map_err(|e| -> AppError { e.into() })?;
+        let project = handler
+            .handle(CreateProject {
+                id: Uuid::new_v4(),
+                name: "hello".to_owned(),
+            })
+            .map_err(|e| -> AppError { e.into() })?;
+        Ok(project)
+    })?;
 
     Ok(Json(project.into()))
 }
