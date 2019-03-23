@@ -127,7 +127,7 @@ pub struct State {
     db: Pool<ConnectionManager<SqliteConnection>>,
 }
 
-fn create_project(req: &HttpRequest<State>) -> actix_web::Result<HttpResponse> {
+fn create_project(req: &HttpRequest<State>) -> actix_web::Result<Json<Project>> {
     // TODO: run in transaction
     // TODO: return JSON response with created Project
     let db = &req.state().db.get().map_err(|e| -> AppError { e.into() })?;
@@ -137,14 +137,14 @@ fn create_project(req: &HttpRequest<State>) -> actix_web::Result<HttpResponse> {
         utc_now: Utc::now,
     };
 
-    handler
+    let project = handler
         .handle(CreateProject {
             id: Uuid::new_v4(),
             name: "hello".to_owned(),
         })
         .map_err(|e| -> AppError { e.into() })?;
 
-    Ok(HttpResponse::new(StatusCode::OK))
+    Ok(Json(project.into()))
 }
 
 #[derive(Debug, Deserialize, Serialize)]

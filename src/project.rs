@@ -294,9 +294,10 @@ pub struct CreateProjectHandler<'a> {
 }
 
 impl<'a> CreateProjectHandler<'a> {
-    pub fn handle(&self, command: CreateProject) -> Result<(), CreateProjectHandlerError> {
+    pub fn handle(&self, command: CreateProject) -> Result<Project, CreateProjectHandlerError> {
         let project_id = ProjectId(command.id);
         let events = Project::create(project_id, command.name)?;
+        let project = Project::hydrate(&events)?.expect("Project is not None");
         let events: Vec<DomainEvent> = events
             .into_iter()
             .map(|event| DomainEvent {
@@ -307,8 +308,7 @@ impl<'a> CreateProjectHandler<'a> {
             })
             .collect();
         self.repository.persist(Generation::first(), &events)?;
-
-        Ok(())
+        Ok(project)
     }
 }
 
