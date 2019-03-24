@@ -9,20 +9,24 @@ mod project;
 use actix_web::middleware::Logger;
 use actix_web::{
     dev::FromParam, error::ResponseError, http::Method, http::StatusCode, server, App, HttpRequest,
-    HttpResponse, Json,
+    HttpResponse, Json, State,
 };
+use actix::{Actor, Addr, Handler, Message, SyncArbiter, SyncContext};
+use actix_web::{AsyncResponder, HttpMessage};
 use chrono::Utc;
-use diesel::Connection;
 use diesel::r2d2::{ConnectionManager, Pool};
 use diesel::sqlite::SqliteConnection;
+use diesel::Connection;
 use failure::Error;
 use failure_derive::Fail;
+use futures::Future;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::project::{
-    CreateProject, CreateProjectHandler, CreateProjectHandlerError, ListProject,
-    ListProjectHandler, ListProjectHandlerError, ProjectId, ProjectIdParseError, SqliteRepository, SqliteRepositoryError,
+    CreateProjectHandler, CreateProjectHandlerError, ListProject, ListProjectHandler,
+    ListProjectHandlerError, ProjectId, ProjectIdParseError, SqliteRepository,
+    SqliteRepositoryError,
 };
 
 impl FromParam for ProjectId {
@@ -86,6 +90,10 @@ pub enum AppError {
     DatabasePoolError(#[cause] r2d2::Error),
     #[fail(display = "database error")]
     DatabaseError(#[cause] diesel::result::Error),
+    #[fail(display = "mailbox error")]
+    MailboxError(#[cause] actix::MailboxError),
+    #[fail(display = "json payload error")]
+    JsonPayloadError(#[cause] actix_web::error::JsonPayloadError),
     #[fail(display = "create project error")]
     CreateProjectError(#[cause] CreateProjectHandlerError),
     #[fail(display = "list project error")]
@@ -101,6 +109,18 @@ impl From<r2d2::Error> for AppError {
 impl From<diesel::result::Error> for AppError {
     fn from(e: diesel::result::Error) -> Self {
         AppError::DatabaseError(e)
+    }
+}
+
+impl From<actix::MailboxError> for AppError {
+    fn from(e: actix::MailboxError) -> Self {
+        AppError::MailboxError(e)
+    }
+}
+
+impl From<actix_web::error::JsonPayloadError> for AppError {
+    fn from(e: actix_web::error::JsonPayloadError) -> Self {
+        AppError::JsonPayloadError(e)
     }
 }
 
@@ -121,42 +141,70 @@ impl ResponseError for AppError {
         match *self {
             AppError::DatabasePoolError(_) => HttpResponse::new(StatusCode::INTERNAL_SERVER_ERROR),
             AppError::DatabaseError(_) => HttpResponse::new(StatusCode::INTERNAL_SERVER_ERROR),
+            AppError::MailboxError(_) => HttpResponse::new(StatusCode::INTERNAL_SERVER_ERROR),
+            AppError::JsonPayloadError(_) => HttpResponse::new(StatusCode::INTERNAL_SERVER_ERROR),
             AppError::CreateProjectError(_) => HttpResponse::new(StatusCode::BAD_REQUEST),
-            AppError::ListProjectError(
-                ListProjectHandlerError::RepositoryError(
-                    SqliteRepositoryError::NotFoundError
-                )
-            ) => HttpResponse::new(StatusCode::NOT_FOUND),
+            AppError::ListProjectError(ListProjectHandlerError::RepositoryError(
+                SqliteRepositoryError::NotFoundError,
+            )) => HttpResponse::new(StatusCode::NOT_FOUND),
             AppError::ListProjectError(_) => HttpResponse::new(StatusCode::INTERNAL_SERVER_ERROR),
         }
     }
 }
 
-#[derive(Clone)]
-pub struct State {
+pub struct Executor {
     db: Pool<ConnectionManager<SqliteConnection>>,
 }
 
-fn create_project(req: &HttpRequest<State>) -> actix_web::Result<Json<Project>> {
-    // TODO: run in transaction
-    let db = &req.state().db.get().map_err(|e| -> AppError { e.into() })?;
-    let project = db.transaction::<_, AppError, _>(|| {
-        let repository = &mut SqliteRepository { db };
-        let handler = &mut CreateProjectHandler {
-            repository,
-            utc_now: Utc::now,
-        };
+impl Actor for Executor {
+    type Context = SyncContext<Self>;
+}
 
-        let project = handler
-            .handle(CreateProject {
-                id: Uuid::new_v4(),
-                name: "hello".to_owned(),
+#[derive(Clone)]
+pub struct AppState {
+    executor: Addr<Executor>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct CreateProject {
+    name: String,
+}
+
+impl Message for CreateProject {
+    type Result = Result<project::Project, AppError>;
+}
+
+impl Handler<CreateProject> for Executor {
+    type Result = Result<project::Project, AppError>;
+
+    fn handle(&mut self, msg: CreateProject, _: &mut Self::Context) -> Self::Result {
+            let db = &self.db.get().map_err(|e| -> AppError { e.into() })?;
+            db.transaction::<_, AppError, _>(|| {
+                let repository = &mut SqliteRepository { db };
+                let handler = &mut CreateProjectHandler {
+                    repository,
+                    utc_now: Utc::now,
+                };
+
+                let project = handler
+                    .handle(project::CreateProject {
+                        id: Uuid::new_v4(),
+                        name: msg.name,
+                    })
+                    .map_err(|e| -> AppError { e.into() })?;
+                Ok(project)
             })
-            .map_err(|e| -> AppError { e.into() })?;
-        Ok(project)
-    })?;
+    }
+}
 
-    Ok(Json(project.into()))
+// Based on examples: https://github.com/actix/examples/blob/d3a69f0c58f2df583adea59a79969a8c23a03a2a/diesel/src/main.rs
+fn create_project(
+    (body, state): (Json<CreateProject>, State<AppState>),
+) -> impl Future<Item = Json<Project>, Error = AppError> {
+           state.executor.send(CreateProject { name: body.name.clone() })
+            .from_err()
+            .and_then(|res| res.map(|x| Json(x.into())))
+        .responder()
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -175,35 +223,44 @@ impl From<project::Project> for Project {
     }
 }
 
-fn list_project(req: &HttpRequest<State>) -> actix_web::Result<Json<Project>> {
-    let db = &req.state().db.get().map_err(|e| -> AppError { e.into() })?;
-    let repository = &SqliteRepository { db };
-    let handler = &ListProjectHandler { repository };
+// fn list_project(req: &HttpRequest<AppState>) -> actix_web::Result<Json<Project>> {
+//     let db = &req.state().db.get().map_err(|e| -> AppError { e.into() })?;
+//     let repository = &SqliteRepository { db };
+//     let handler = &ListProjectHandler { repository };
 
-    let id: ProjectId = req.match_info().query("id")?;
-    let project = handler
-        .handle(ListProject { id })
-        .map_err(|e| -> AppError { e.into() })?;
-    Ok(Json(project.into()))
-}
+//     let id: ProjectId = req.match_info().query("id")?;
+//     let project = handler
+//         .handle(ListProject { id })
+//         .map_err(|e| -> AppError { e.into() })?;
+//     Ok(Json(project.into()))
+// }
 
 // Failure usage: https://github.com/rust-console/cargo-n64/blob/a4c93f9bb145f3ee8ac6d09e05e8ff4554b68a2d/src/lib.rs#L108-L137
 
 fn main() -> Result<(), Error> {
     std::env::set_var("RUST_LOG", "actix_web=debug");
     env_logger::init();
+
+    let sys = actix::System::new("feature-toggler");
+
     let manager = ConnectionManager::<SqliteConnection>::new("db.sqlite");
     let pool = Pool::builder().build(manager)?;
+    let executor = SyncArbiter::start(3, move || Executor {
+        db: pool.clone(),
+    });
+
     server::new(move || {
-        App::with_state(State { db: pool.clone() })
+        App::with_state(AppState { executor: executor.clone() })
             .middleware(Logger::default())
             .resource("/projects/create", |r| {
-                r.method(Method::POST).f(create_project)
+                r.method(Method::POST).with_async(create_project)
             })
-            .resource("/projects/{id}", |r| r.method(Method::GET).f(list_project))
+            // .resource("/projects/{id}", |r| r.method(Method::GET).f(list_project))
     })
     .bind("127.0.0.1:8088")?
-    .run();
+    .start();
+
+    let _ = sys.run();
 
     Ok(())
 }
