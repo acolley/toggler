@@ -6,12 +6,12 @@ extern crate diesel;
 mod database;
 mod project;
 
+use actix::{Actor, Addr, Handler, Message, SyncArbiter, SyncContext};
 use actix_web::middleware::Logger;
 use actix_web::{
     dev::FromParam, error::ResponseError, http::Method, http::StatusCode, server, App, HttpRequest,
     HttpResponse, Json, State,
 };
-use actix::{Actor, Addr, Handler, Message, SyncArbiter, SyncContext};
 use actix_web::{AsyncResponder, HttpMessage};
 use chrono::Utc;
 use diesel::r2d2::{ConnectionManager, Pool};
@@ -178,22 +178,22 @@ impl Handler<CreateProject> for Executor {
     type Result = Result<project::Project, AppError>;
 
     fn handle(&mut self, msg: CreateProject, _: &mut Self::Context) -> Self::Result {
-            let db = &self.db.get().map_err(|e| -> AppError { e.into() })?;
-            db.transaction::<_, AppError, _>(|| {
-                let repository = &mut SqliteRepository { db };
-                let handler = &mut CreateProjectHandler {
-                    repository,
-                    utc_now: Utc::now,
-                };
+        let db = &self.db.get().map_err(|e| -> AppError { e.into() })?;
+        db.transaction::<_, AppError, _>(|| {
+            let repository = &mut SqliteRepository { db };
+            let handler = &mut CreateProjectHandler {
+                repository,
+                utc_now: Utc::now,
+            };
 
-                let project = handler
-                    .handle(project::CreateProject {
-                        id: Uuid::new_v4(),
-                        name: msg.name,
-                    })
-                    .map_err(|e| -> AppError { e.into() })?;
-                Ok(project)
-            })
+            let project = handler
+                .handle(project::CreateProject {
+                    id: Uuid::new_v4(),
+                    name: msg.name,
+                })
+                .map_err(|e| -> AppError { e.into() })?;
+            Ok(project)
+        })
     }
 }
 
@@ -201,9 +201,13 @@ impl Handler<CreateProject> for Executor {
 fn create_project(
     (body, state): (Json<CreateProject>, State<AppState>),
 ) -> impl Future<Item = Json<Project>, Error = AppError> {
-           state.executor.send(CreateProject { name: body.name.clone() })
-            .from_err()
-            .and_then(|res| res.map(|x| Json(x.into())))
+    state
+        .executor
+        .send(CreateProject {
+            name: body.name.clone(),
+        })
+        .from_err()
+        .and_then(|res| res.map(|x| Json(x.into())))
         .responder()
 }
 
@@ -245,17 +249,17 @@ fn main() -> Result<(), Error> {
 
     let manager = ConnectionManager::<SqliteConnection>::new("db.sqlite");
     let pool = Pool::builder().build(manager)?;
-    let executor = SyncArbiter::start(3, move || Executor {
-        db: pool.clone(),
-    });
+    let executor = SyncArbiter::start(3, move || Executor { db: pool.clone() });
 
     server::new(move || {
-        App::with_state(AppState { executor: executor.clone() })
-            .middleware(Logger::default())
-            .resource("/projects/create", |r| {
-                r.method(Method::POST).with_async(create_project)
-            })
-            // .resource("/projects/{id}", |r| r.method(Method::GET).f(list_project))
+        App::with_state(AppState {
+            executor: executor.clone(),
+        })
+        .middleware(Logger::default())
+        .resource("/projects/create", |r| {
+            r.method(Method::POST).with_async(create_project)
+        })
+        // .resource("/projects/{id}", |r| r.method(Method::GET).f(list_project))
     })
     .bind("127.0.0.1:8088")?
     .start();
