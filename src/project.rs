@@ -114,23 +114,6 @@ impl Aggregate for Project {
     }
 }
 
-// #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-// pub struct DomainEventId(Uuid);
-
-// impl DomainEventId {
-//     pub fn to_string(&self) -> String {
-//         self.0.to_string()
-//     }
-// }
-
-// #[derive(Debug, Eq, PartialEq)]
-// pub struct DomainEvent {
-//     id: DomainEventId,
-//     project_id: ProjectId,
-//     created_at: DateTime<Utc>,
-//     event: ProjectEvent,
-// }
-
 #[derive(Debug, Fail)]
 pub enum DomainEventError {
     #[fail(display = "failed to parse uuid")]
@@ -215,9 +198,7 @@ pub struct SqliteRepository<'a> {
 impl<'a> Repository for SqliteRepository<'a> {
     type Aggregate = Project;
     type Error = SqliteRepositoryError;
-// }
 
-// impl<'a> SqliteRepository<'a> {
     fn get(&self, id: ProjectId) -> Result<Project, SqliteRepositoryError> {
         use crate::database::schema::events::dsl::{aggregate_id, events};
         use diesel::prelude::*;
@@ -366,6 +347,7 @@ mod test {
         use crate::database::models::{Event, NewEvent};
         use crate::database::schema;
         use crate::database::schema::events::dsl::*;
+        use crate::domain::Repository;
 
         use super::super::{
             DomainEvent, DomainEventId, Generation, Project, ProjectEvent, ProjectId,
@@ -409,13 +391,13 @@ mod test {
             diesel_migrations::run_pending_migrations(db)?;
             let mut repository = SqliteRepository { db };
             let project_id = ProjectId(Uuid::parse_str("936da01f-9abd-4d9d-80c7-02af85c822a8")?);
-            let event_id = DomainEventId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000")?);
+            let event_id = DomainEventId::new(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000")?);
 
             repository.persist(
                 Generation::first(),
                 &[DomainEvent {
                     id: event_id,
-                    project_id,
+                    aggregate_id: project_id,
                     created_at: Utc.ymd(2019, 1, 1).and_hms(0, 0, 0),
                     event: ProjectEvent::Created {
                         id: project_id,
