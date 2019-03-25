@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use crate::database::models::{Event, NewEvent};
 use crate::database::schema;
+use crate::domain::{Aggregate, DomainEvent, DomainEventId, Generation, Repository};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ProjectId(Uuid);
@@ -48,25 +49,6 @@ impl From<ProjectId> for Uuid {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct Generation(i32);
-
-impl Generation {
-    pub fn first() -> Self {
-        Self(0)
-    }
-
-    pub fn next(self) -> Self {
-        Self(self.0 + 1)
-    }
-}
-
-impl From<Generation> for i32 {
-    fn from(generation: Generation) -> Self {
-        generation.0
-    }
-}
-
 #[derive(Debug, Eq, Fail, PartialEq)]
 pub enum ProjectError {
     #[fail(display = "invalid project name: {}", name)]
@@ -91,7 +73,7 @@ impl Project {
         match (&project, event) {
             (None, ProjectEvent::Created { id, name }) => Ok(Project {
                 id: *id,
-                generation: Generation(0),
+                generation: Generation::first(),
                 name: name.clone(),
             }),
             _ => Err(ProjectError::InvalidStateEvent {
@@ -123,22 +105,31 @@ impl ProjectEvent {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DomainEventId(Uuid);
+impl Aggregate for Project {
+    type Id = ProjectId;
+    type Event = ProjectEvent;
 
-impl DomainEventId {
-    pub fn to_string(&self) -> String {
-        self.0.to_string()
+    fn id(&self) -> &ProjectId {
+        &self.id
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
-pub struct DomainEvent {
-    id: DomainEventId,
-    project_id: ProjectId,
-    created_at: DateTime<Utc>,
-    event: ProjectEvent,
-}
+// #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+// pub struct DomainEventId(Uuid);
+
+// impl DomainEventId {
+//     pub fn to_string(&self) -> String {
+//         self.0.to_string()
+//     }
+// }
+
+// #[derive(Debug, Eq, PartialEq)]
+// pub struct DomainEvent {
+//     id: DomainEventId,
+//     project_id: ProjectId,
+//     created_at: DateTime<Utc>,
+//     event: ProjectEvent,
+// }
 
 #[derive(Debug, Fail)]
 pub enum DomainEventError {
@@ -168,11 +159,11 @@ impl From<serde_json::error::Error> for DomainEventError {
     }
 }
 
-impl DomainEvent {
+impl DomainEvent<Project> {
     pub fn from_event(event: Event) -> Result<Self, DomainEventError> {
         Ok(Self {
-            id: DomainEventId(Uuid::parse_str(&event.id)?),
-            project_id: ProjectId(Uuid::parse_str(&event.aggregate_id)?),
+            id: DomainEventId::new(Uuid::parse_str(&event.id)?),
+            aggregate_id: ProjectId(Uuid::parse_str(&event.aggregate_id)?),
             created_at: event.created_at.parse::<DateTime<Utc>>()?,
             event: serde_json::from_str(&event.data)?,
         })
@@ -221,8 +212,13 @@ pub struct SqliteRepository<'a> {
     pub db: &'a SqliteConnection,
 }
 
-impl<'a> SqliteRepository<'a> {
-    pub fn get(&self, id: ProjectId) -> Result<Project, SqliteRepositoryError> {
+impl<'a> Repository for SqliteRepository<'a> {
+    type Aggregate = Project;
+    type Error = SqliteRepositoryError;
+// }
+
+// impl<'a> SqliteRepository<'a> {
+    fn get(&self, id: ProjectId) -> Result<Project, SqliteRepositoryError> {
         use crate::database::schema::events::dsl::{aggregate_id, events};
         use diesel::prelude::*;
 
@@ -237,16 +233,16 @@ impl<'a> SqliteRepository<'a> {
         project.ok_or_else(|| SqliteRepositoryError::NotFoundError)
     }
 
-    pub fn persist(
-        &self,
+    fn persist(
+        &mut self,
         generation: Generation,
-        events: &[DomainEvent],
+        events: &[DomainEvent<Project>],
     ) -> Result<(), SqliteRepositoryError> {
         let mut generation = generation;
         for event in events {
             let new = NewEvent {
                 id: &event.id.to_string(),
-                aggregate_id: &event.project_id.to_string(),
+                aggregate_id: &event.aggregate_id.to_string(),
                 generation: generation.into(),
                 created_at: &event.created_at.to_rfc3339(),
                 type_: &event.event.type_(),
@@ -288,20 +284,20 @@ impl From<SqliteRepositoryError> for CreateProjectHandlerError {
 }
 
 pub struct CreateProjectHandler<'a> {
-    pub repository: &'a SqliteRepository<'a>,
+    pub repository: &'a mut SqliteRepository<'a>,
     pub utc_now: fn() -> DateTime<Utc>,
 }
 
 impl<'a> CreateProjectHandler<'a> {
-    pub fn handle(&self, command: CreateProject) -> Result<Project, CreateProjectHandlerError> {
+    pub fn handle(&mut self, command: CreateProject) -> Result<Project, CreateProjectHandlerError> {
         let project_id = ProjectId(command.id);
         let events = Project::create(project_id, command.name)?;
         let project = Project::hydrate(&events)?.expect("Project is not None");
-        let events: Vec<DomainEvent> = events
+        let events: Vec<DomainEvent<Project>> = events
             .into_iter()
             .map(|event| DomainEvent {
-                id: DomainEventId(Uuid::new_v4()),
-                project_id,
+                id: DomainEventId::new(Uuid::new_v4()),
+                aggregate_id: project_id,
                 created_at: (self.utc_now)(),
                 event,
             })

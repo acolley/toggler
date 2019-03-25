@@ -4,6 +4,7 @@
 extern crate diesel;
 
 mod database;
+mod domain;
 mod project;
 
 use actix::{Actor, Addr, Handler, Message, SyncArbiter, SyncContext};
