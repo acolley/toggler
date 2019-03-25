@@ -4,7 +4,6 @@ use chrono::{DateTime, Utc};
 use diesel;
 use diesel::sqlite::SqliteConnection;
 use diesel::RunQueryDsl;
-use failure::Error;
 use failure_derive::Fail;
 use serde::{Deserialize, Serialize};
 use serde_json;
@@ -57,7 +56,7 @@ impl Generation {
         Self(0)
     }
 
-    pub fn next(&self) -> Self {
+    pub fn next(self) -> Self {
         Self(self.0 + 1)
     }
 }
@@ -420,7 +419,7 @@ mod test {
                 Generation::first(),
                 &[DomainEvent {
                     id: event_id,
-                    project_id: project_id,
+                    project_id,
                     created_at: Utc.ymd(2019, 1, 1).and_hms(0, 0, 0),
                     event: ProjectEvent::Created {
                         id: project_id,

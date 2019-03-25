@@ -8,11 +8,11 @@ mod project;
 
 use actix::{Actor, Addr, Handler, Message, SyncArbiter, SyncContext};
 use actix_web::middleware::Logger;
+use actix_web::AsyncResponder;
 use actix_web::{
-    dev::FromParam, error::ResponseError, http::Method, http::StatusCode, server, App, HttpRequest,
+    dev::FromParam, error::ResponseError, http::Method, http::StatusCode, server, App,
     HttpResponse, Json, Path, State,
 };
-use actix_web::{AsyncResponder, HttpMessage};
 use chrono::Utc;
 use diesel::r2d2::{ConnectionManager, Pool};
 use diesel::sqlite::SqliteConnection;
@@ -24,9 +24,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::project::{
-    CreateProjectHandler, CreateProjectHandlerError, ListProjectHandler,
-    ListProjectHandlerError, ProjectId, ProjectIdParseError, SqliteRepository,
-    SqliteRepositoryError,
+    CreateProjectHandler, CreateProjectHandlerError, ListProjectHandler, ListProjectHandlerError,
+    ProjectId, ProjectIdParseError, SqliteRepository, SqliteRepositoryError,
 };
 
 impl FromParam for ProjectId {
@@ -213,14 +212,10 @@ impl Handler<ListProject> for Executor {
         let db = &self.db.get().map_err(|e| -> AppError { e.into() })?;
         db.transaction::<_, AppError, _>(|| {
             let repository = &mut SqliteRepository { db };
-            let handler = &mut ListProjectHandler {
-                repository,
-            };
+            let handler = &mut ListProjectHandler { repository };
 
             let project = handler
-                .handle(project::ListProject {
-                    id: msg.id,
-                })
+                .handle(project::ListProject { id: msg.id })
                 .map_err(|e| -> AppError { e.into() })?;
             Ok(project)
         })
@@ -288,7 +283,9 @@ fn main() -> Result<(), Error> {
         .resource("/projects/create", |r| {
             r.method(Method::POST).with_async(create_project)
         })
-        .resource("/projects/{id}", |r| r.method(Method::GET).with_async(list_project))
+        .resource("/projects/{id}", |r| {
+            r.method(Method::GET).with_async(list_project)
+        })
     })
     .bind("127.0.0.1:8088")?
     .start();
