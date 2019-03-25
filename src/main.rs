@@ -10,7 +10,7 @@ use actix::{Actor, Addr, Handler, Message, SyncArbiter, SyncContext};
 use actix_web::middleware::Logger;
 use actix_web::{
     dev::FromParam, error::ResponseError, http::Method, http::StatusCode, server, App, HttpRequest,
-    HttpResponse, Json, State,
+    HttpResponse, Json, Path, State,
 };
 use actix_web::{AsyncResponder, HttpMessage};
 use chrono::Utc;
@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::project::{
-    CreateProjectHandler, CreateProjectHandlerError, ListProject, ListProjectHandler,
+    CreateProjectHandler, CreateProjectHandlerError, ListProjectHandler,
     ListProjectHandlerError, ProjectId, ProjectIdParseError, SqliteRepository,
     SqliteRepositoryError,
 };
@@ -197,6 +197,36 @@ impl Handler<CreateProject> for Executor {
     }
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+struct ListProject {
+    id: ProjectId,
+}
+
+impl Message for ListProject {
+    type Result = Result<project::Project, AppError>;
+}
+
+impl Handler<ListProject> for Executor {
+    type Result = Result<project::Project, AppError>;
+
+    fn handle(&mut self, msg: ListProject, _: &mut Self::Context) -> Self::Result {
+        let db = &self.db.get().map_err(|e| -> AppError { e.into() })?;
+        db.transaction::<_, AppError, _>(|| {
+            let repository = &mut SqliteRepository { db };
+            let handler = &mut ListProjectHandler {
+                repository,
+            };
+
+            let project = handler
+                .handle(project::ListProject {
+                    id: msg.id,
+                })
+                .map_err(|e| -> AppError { e.into() })?;
+            Ok(project)
+        })
+    }
+}
+
 // Based on examples: https://github.com/actix/examples/blob/d3a69f0c58f2df583adea59a79969a8c23a03a2a/diesel/src/main.rs
 fn create_project(
     (body, state): (Json<CreateProject>, State<AppState>),
@@ -227,17 +257,16 @@ impl From<project::Project> for Project {
     }
 }
 
-// fn list_project(req: &HttpRequest<AppState>) -> actix_web::Result<Json<Project>> {
-//     let db = &req.state().db.get().map_err(|e| -> AppError { e.into() })?;
-//     let repository = &SqliteRepository { db };
-//     let handler = &ListProjectHandler { repository };
-
-//     let id: ProjectId = req.match_info().query("id")?;
-//     let project = handler
-//         .handle(ListProject { id })
-//         .map_err(|e| -> AppError { e.into() })?;
-//     Ok(Json(project.into()))
-// }
+fn list_project(
+    (id, state): (Path<ProjectId>, State<AppState>),
+) -> impl Future<Item = Json<Project>, Error = AppError> {
+    state
+        .executor
+        .send(ListProject { id: *id })
+        .from_err()
+        .and_then(|res| res.map(|x| Json(x.into())))
+        .responder()
+}
 
 // Failure usage: https://github.com/rust-console/cargo-n64/blob/a4c93f9bb145f3ee8ac6d09e05e8ff4554b68a2d/src/lib.rs#L108-L137
 
@@ -259,7 +288,7 @@ fn main() -> Result<(), Error> {
         .resource("/projects/create", |r| {
             r.method(Method::POST).with_async(create_project)
         })
-        // .resource("/projects/{id}", |r| r.method(Method::GET).f(list_project))
+        .resource("/projects/{id}", |r| r.method(Method::GET).with_async(list_project))
     })
     .bind("127.0.0.1:8088")?
     .start();
