@@ -68,28 +68,6 @@ impl Project {
     pub fn create(id: ProjectId, name: String) -> Result<Vec<ProjectEvent>, ProjectError> {
         Ok(vec![ProjectEvent::Created { id, name }])
     }
-
-    pub fn apply_event(project: Option<Self>, event: &ProjectEvent) -> Result<Self, ProjectError> {
-        match (&project, event) {
-            (None, ProjectEvent::Created { id, name }) => Ok(Project {
-                id: *id,
-                generation: Generation::first(),
-                name: name.clone(),
-            }),
-            _ => Err(ProjectError::InvalidStateEvent {
-                state: format!("{:?}", project),
-                event: format!("{:?}", event),
-            }),
-        }
-    }
-
-    pub fn hydrate(events: &[ProjectEvent]) -> Result<Option<Self>, ProjectError> {
-        let mut project = None;
-        for event in events {
-            project = Some(Self::apply_event(project, event)?);
-        }
-        Ok(project)
-    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -108,9 +86,24 @@ impl ProjectEvent {
 impl Aggregate for Project {
     type Id = ProjectId;
     type Event = ProjectEvent;
+    type Err = ProjectError;
 
     fn id(&self) -> &ProjectId {
         &self.id
+    }
+
+    fn apply_event(project: Option<Self>, event: &ProjectEvent) -> Result<Self, ProjectError> {
+        match (&project, event) {
+            (None, ProjectEvent::Created { id, name }) => Ok(Project {
+                id: *id,
+                generation: Generation::first(),
+                name: name.clone(),
+            }),
+            _ => Err(ProjectError::InvalidStateEvent {
+                state: format!("{:?}", project),
+                event: format!("{:?}", event),
+            }),
+        }
     }
 }
 
@@ -197,7 +190,7 @@ pub struct SqliteRepository<'a> {
 
 impl<'a> Repository for SqliteRepository<'a> {
     type Aggregate = Project;
-    type Error = SqliteRepositoryError;
+    type Err = SqliteRepositoryError;
 
     fn get(&self, id: ProjectId) -> Result<Project, SqliteRepositoryError> {
         use crate::database::schema::events::dsl::{aggregate_id, events};
