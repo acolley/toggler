@@ -25,8 +25,11 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::project::{
-    CreateProjectHandler, CreateProjectHandlerError, ListProjectHandler, ListProjectHandlerError,
-    ProjectId, ProjectIdParseError, SqliteRepository, SqliteRepositoryError,
+    error::{
+        CreateProjectHandlerError, ListProjectHandlerError, ProjectIdParseError,
+        SqliteRepositoryError,
+    },
+    CreateProjectHandler, ListProjectHandler, ProjectId, SqliteRepository,
 };
 
 impl FromParam for ProjectId {
