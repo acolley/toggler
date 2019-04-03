@@ -29,10 +29,16 @@ pub trait Aggregate {
     type Err;
 
     fn id(&self) -> &Self::Id;
+    fn generation(&self) -> Generation;
 
-    fn apply_event(state: Option<Self>, event: &Self::Event) -> Result<Self, Self::Err> where Self: Sized;
+    fn apply_event(state: Option<Self>, event: &Self::Event) -> Result<Self, Self::Err>
+    where
+        Self: Sized;
 
-    fn hydrate(events: &[Self::Event]) -> Result<Option<Self>, Self::Err> where Self: Sized {
+    fn hydrate(events: &[Self::Event]) -> Result<Option<Self>, Self::Err>
+    where
+        Self: Sized,
+    {
         let mut state = None;
         for event in events {
             state = Some(Self::apply_event(state, event)?);
@@ -66,6 +72,13 @@ pub trait Repository {
     type Aggregate: Aggregate;
     type Err;
 
-    fn get(&self, id: <<Self as Repository>::Aggregate as Aggregate>::Id) -> Result<Self::Aggregate, Self::Err>;
-    fn persist(&mut self, generation: Generation, events: &[DomainEvent<Self::Aggregate>]) -> Result<(), Self::Err>;
+    fn get(
+        &self,
+        id: <<Self as Repository>::Aggregate as Aggregate>::Id,
+    ) -> Result<Self::Aggregate, Self::Err>;
+    fn persist(
+        &mut self,
+        generation: Generation,
+        events: &[DomainEvent<Self::Aggregate>],
+    ) -> Result<(), Self::Err>;
 }

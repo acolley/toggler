@@ -92,6 +92,10 @@ impl Aggregate for Project {
         &self.id
     }
 
+    fn generation(&self) -> Generation {
+        self.generation
+    }
+
     fn apply_event(project: Option<Self>, event: &ProjectEvent) -> Result<Self, ProjectError> {
         match (&project, event) {
             (None, ProjectEvent::Created { id, name }) => Ok(Project {
@@ -257,12 +261,19 @@ impl From<SqliteRepositoryError> for CreateProjectHandlerError {
     }
 }
 
-pub struct CreateProjectHandler<'a> {
-    pub repository: &'a mut SqliteRepository<'a>,
+pub struct CreateProjectHandler<'a, E, R>
+where
+    R: Repository<Aggregate = Project, Err = E>,
+{
+    pub repository: &'a mut R,
     pub utc_now: fn() -> DateTime<Utc>,
 }
 
-impl<'a> CreateProjectHandler<'a> {
+impl<'a, E, R> CreateProjectHandler<'a, E, R>
+where
+    R: Repository<Aggregate = Project, Err = E>,
+    CreateProjectHandlerError: From<E>,
+{
     pub fn handle(&mut self, command: CreateProject) -> Result<Project, CreateProjectHandlerError> {
         let project_id = ProjectId(command.id);
         let events = Project::create(project_id, command.name)?;
@@ -384,7 +395,8 @@ mod test {
             diesel_migrations::run_pending_migrations(db)?;
             let mut repository = SqliteRepository { db };
             let project_id = ProjectId(Uuid::parse_str("936da01f-9abd-4d9d-80c7-02af85c822a8")?);
-            let event_id = DomainEventId::new(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000")?);
+            let event_id =
+                DomainEventId::new(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000")?);
 
             repository.persist(
                 Generation::first(),
