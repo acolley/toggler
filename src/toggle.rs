@@ -5,9 +5,13 @@ use crate::domain::{Aggregate, Generation};
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct Toggle {
+    // Universally unique identifier
     id: Uuid,
+    // For optimistic locking
     generation: Generation,
+    // Human readable name
     name: String,
+    // For evolving Toggles
     version: i32,
 }
 
