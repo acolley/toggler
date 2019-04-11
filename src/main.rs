@@ -11,9 +11,7 @@ mod toggle;
 
 use actix::SyncArbiter;
 use actix_web::middleware::Logger;
-use actix_web::{
-    http::Method, server, App,
-};
+use actix_web::{http::Method, server, App};
 use diesel::r2d2::{ConnectionManager, Pool};
 use diesel::sqlite::SqliteConnection;
 use failure::Error;
@@ -26,24 +24,7 @@ fn main() -> Result<(), Error> {
 
     let sys = actix::System::new("feature-toggler");
 
-    let manager = ConnectionManager::<SqliteConnection>::new("db.sqlite");
-    let pool = Pool::builder().build(manager)?;
-    let executor = SyncArbiter::start(3, move || Executor { db: pool.clone() });
-
-    server::new(move || {
-        App::with_state(AppState {
-            executor: executor.clone(),
-        })
-        .middleware(Logger::default())
-        .resource("/projects/create", |r| {
-            r.method(Method::POST).with_async(app::create_project)
-        })
-        .resource("/projects/{id}", |r| {
-            r.method(Method::GET).with_async(app::list_project)
-        })
-    })
-    .bind("127.0.0.1:8088")?
-    .start();
+    app::create("db.sqlite")?.bind("127.0.0.1:8088")?.start();
 
     let _ = sys.run();
 

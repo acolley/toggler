@@ -17,10 +17,7 @@ pub struct Toggle {
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum Event {
-    Created {
-        id: Uuid,
-        name: String,
-    },
+    Created { id: Uuid, name: String },
 }
 
 #[derive(Debug, Fail)]
@@ -79,9 +76,10 @@ mod test {
         let events = Toggle::create(id, "test".to_owned())?;
         assert_eq!(
             events,
-            vec![
-                Event::Created { id: id, name: "test".to_owned() },
-            ],
+            vec![Event::Created {
+                id: id,
+                name: "test".to_owned()
+            },],
         );
         Ok(())
     }

@@ -5,7 +5,10 @@ authors = ["Alasdair Colley <alnessy@hotmail.com>"]
 edition = "2018"
 
 [dependencies]
-actix = "0.7.9"
+# Only specify minor version as actix types
+# must be compatible with the version actix-web uses.
+# https://github.com/actix/actix-web/issues/46
+actix = "0.7"
 actix-web = "0.7.18"
 chrono = "0.4.6"
 diesel = { version = "1.4.2", features = ["r2d2", "sqlite"] }
@@ -14,7 +17,11 @@ env_logger = "0.6.1"
 failure = "0.1.5"
 failure_derive = "0.1.5"
 futures = "0.1.25"
+reqwest = "0.9.14"
 r2d2 = "0.8.3"
 serde = { version = "1.0.89", features = ["derive"] }
 serde_json = "1.0.39"
 uuid = { version = "0.7.2", features = ["serde", "v4"] }
+
+[dev-dependencies]
+tempdir = "0.3.7"
