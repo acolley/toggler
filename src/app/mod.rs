@@ -287,15 +287,21 @@ pub fn create(
 mod test {
     use std::fs;
     use std::path::Path;
+    use std::sync::mpsc;
 
     use actix::{Actor, Addr, Handler, Message, SyncArbiter, SyncContext};
     use actix_web::http::{Method, StatusCode};
     use actix_web::test::TestServer;
     use actix_web::HttpResponse;
+    use diesel::prelude::*;
     use diesel::r2d2::{ConnectionManager, Pool};
     use diesel::sqlite::SqliteConnection;
     use failure::Error;
     use tempdir::TempDir;
+
+    use crate::database::models::{Event, NewEvent};
+    use crate::database::schema;
+    use crate::database::schema::events::dsl::*;
 
     use super::{create_project, AppState, CreateProject, Executor};
 
@@ -308,20 +314,69 @@ mod test {
         let pool = Pool::builder().build(manager)?;
         let db = pool.get()?;
         diesel_migrations::run_pending_migrations(&db)?;
+        
+        let (tx, rx) = mpsc::channel();
 
         std::thread::spawn(move || {
             let sys = actix::System::new("test-feature-toggler");
             let server = super::create(db_path.clone().to_str().unwrap()).unwrap();
             server.bind("127.0.0.1:8088").unwrap().start();
+            tx.send("127.0.0.1:8088").unwrap();
             let _ = sys.run();
         });
 
+        let addr = rx.recv()?;
+
         let client = reqwest::Client::new();
         let response = client
-            .post("http://127.0.0.1:8088/projects/create")
+            .post(&format!("http://{}/projects/create", addr))
             .json(&CreateProject {
                 name: "test".to_owned(),
             })
+            .send()?;
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_list_project() -> Result<(), Error> {
+        let tmpdir = TempDir::new("db")?;
+
+        let db_path = tmpdir.path().join("db.sqlite");
+        let manager = ConnectionManager::<SqliteConnection>::new(db_path.to_str().unwrap());
+        let pool = Pool::builder().build(manager)?;
+        let db = pool.get()?;
+        diesel_migrations::run_pending_migrations(&db)?;
+
+        let event = NewEvent {
+            id: "550e8400-e29b-41d4-a716-446655440000",
+            aggregate_id: "936da01f-9abd-4d9d-80c7-02af85c822a8",
+            generation: 0,
+            created_at: "2019-01-01T12:34:56+00:00",
+            type_: "Created",
+            data: "{\"Created\":{\"id\":\"936da01f-9abd-4d9d-80c7-02af85c822a8\",\"name\":\"test\"}}",
+        };
+        diesel::insert_into(schema::events::table)
+            .values(&event)
+            .execute(&db)?;
+        
+        let (tx, rx) = mpsc::channel();
+
+        std::thread::spawn(move || {
+            let sys = actix::System::new("test-feature-toggler");
+            let server = super::create(db_path.clone().to_str().unwrap()).unwrap();
+            server.bind("127.0.0.1:8089").unwrap().start();
+            tx.send("127.0.0.1:8089").unwrap();
+            let _ = sys.run();
+        });
+
+        let addr = rx.recv()?;
+
+        let client = reqwest::Client::new();
+        let response = client
+            .get(&format!("http://{}/projects/936da01f-9abd-4d9d-80c7-02af85c822a8", addr))
             .send()?;
 
         assert_eq!(response.status(), reqwest::StatusCode::OK);
